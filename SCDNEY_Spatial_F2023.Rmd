@@ -1,0 +1,972 @@
+---
+title: "Unlocking single cell spatial omics analyses with SCDNEY - Demo"
+author:
+- name: Yue Cao^1,2,3^, Helen Fu^1,2,3^, Jean Yang^1,2,3^
+  affiliation:
+    
+  - 1. Sydney Precision Data Science Centre, University of Sydney, Australia;
+  - 2. School of Mathematics and Statistics, University of Sydney, Australia;
+  - 3. Charles Perkins Centre, University of Sydney, Australia   
+date: 1 August, 2023
+
+params:
+  evalc: TRUE   ## EDIT to TRUE when generating output, otherwise 'FALSE'
+  show: 'hide'  ## EDIT to 'as.is' when generating Suggestions, otherwise 'hide'
+output:
+  html_document:
+    css: https://use.fontawesome.com/releases/v5.0.6/css/all.css
+    code_folding: hide
+    fig_height: 12
+    fig_width: 12
+    toc: yes
+    number_sections: true
+    toc_depth: 3
+    toc_float: yes
+    self_contained: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,  message=FALSE, warning= FALSE)
+```
+
+
+```{r, eval=params$evalc}
+## library(devtools)
+## library(BiocManager)
+library(SingleCellExperiment)
+library(ggplot2)
+library(scFeatures) ## devtools::install_github("SydneyBioX/scFeatures")
+library(ClassifyR) ## BiocManager::install("ClassifyR", dependencies = TRUE)
+library(ggthemes)
+library(spicyR) ## BiocManager::install("spicyR")
+library(dplyr)
+library(limma)
+library(plotly)
+library(scattermore)
+library(tidyr)
+library(survival)
+library(survminer)
+library(spatstat)
+##library(spatstat.core) ## install.packages("spatstat")
+##library(spatstat.geom) 
+library(scater)
+library(scran)
+library(lisaClust)
+
+theme_set(theme_classic())
+```
+
+# Overview
+
+As single cell technology advances, the recent development of spatial omics allows us to examine the spatial organisation of cells within tissue in their native environment. This workshop will discuss the challenges and analytical focus associated with disease outcome prediction using multi-sample spatial dataset. We will also talk about general analytic strategies and the critical thinking questions that arise in the workflow.  
+
+<br>
+<div class="aimbox"> 
+### <span class="fa-stack fa"><i class="fa fa-circle fa-stack-2x"></i><i class="fa fa-pencil-alt fa-stack-1x fa-inverse"></i></span> Preparation and assumed knowledge {-}
+- Knowledge of R syntax
+- Familiarity with the [SingleCellExperiment class](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) 
+- Ability to install all required R packages, please check sessionInfo at the end of this documents to ensure you are using the correct version. 
+
+### <span class="fa-stack fa"><i class="fa fa-circle fa-stack-2x"></i><i class="fa fa-location-arrow fa-stack-1x fa-inverse"></i></span> Learning objectives {-}
+- Understand and visualise spatial omics dataset     
+- Explore various strategies for disease outcome prediction using spatial omics data      
+- Understand and generate individual feature representations from cell levelexpression matrix 
+- Develop appreciation on how to assess performance of classification models   
+- Perform disease outcome prediction using the feature representation and robust classification framework     
+</div>
+
+<br>
+
+### Time outline {-}
+ Structure for this 2-hour workshop:
+
+ | Activity                     | Time    |
+ |------------------------------|---------|
+ | Introduction to spatial technologies    | 20m  |
+ | Cell segmentation with Deep learning (with BIDCell)   | 20m  |
+ | Exploring spatial data    |  20m    |
+ | Break (Q&A) | 10m  |
+ | Extracting features from spatial data (with scFeatures)    |  30m    |
+ | Performing disease outcome classification (with ClassifyR) |  20m    |
+
+# Initial exploration and visualisation
+
+#### Data and Background {-} 
+Imaging mass cytometry (IMC) is a new imaging technique that gathers spatial information to create images that show the distribution of different cell types and their associated protein expression patterns in tissue. 
+In this demo, we examine IMC dataset taken from 
+
+Moldoveanu D *et. al.* Spatially mapping the immune landscape of melanoma using imaging mass cytometry. Science Immunology, Apr;7(70):eabi5072. doi: 10.1126/sciimmunol.abi5072. PMID: 35363543.
+
+Here, the authors quantified the expression of 35 protein markers in two melanoma cohorts. Basic characeteristic of the data objects:   
+- The dataset contains 35 proteins and 112,497 cells.   
+- The outcome is 16 non-responders (Response = No) and 14 responders (Response = Yes).    
+- 17 patients received CTLA4 treatment, 8 patients received PD1, 5 patients received both.   
+- From a range of tissue source and primary site.    
+
+```{r eval=params$evalc}
+data_sce <- readRDS("data_sce.rds")
+data_sce <- logNormCounts(data_sce)
+
+print("data format")
+data_sce
+
+print("expression matrix is stored in proteins by cells matrix")
+logcounts(data_sce)[1:7, 1:7]
+
+##print("the object stores meta data (such as patient outcome information) about each cell")
+##DT::datatable( data.frame(colData(data_sce))[1:5, ]  , options = list(scrollX = TRUE))
+```
+
+#### Aim {-} 
+In this demo, we will examine one of the cohort - pretreatment melanoma samples from 30 individual with advanced disease who subsequently received ICI therapy. We will aim to identify features that has the potnetial to discriminate between non-responders (Response = No) and responders (Response = Yes).   
+
+### Exploration 1: How complex is my data ? {-} 
+At the start of the exploration, its often good to get a sense of the complexity of the data.  We usually do this by exploring the distribution of the outcomes and various variables in the patients meta-data.  Here, we use cross-tabulation to examine the following variables:
+
+- responder vs non-responders
+- tissue source
+- primary sites
+
+```{r eval=params$evalc, fig.height=5, fig.width=5}
+print("number of responder and non responder in each type of treatment  ")
+metadata <- colData(data_sce)
+metadata <- metadata[ !duplicated(metadata$Sample_ID), ]
+table(metadata$Response, metadata$Treatment) 
+
+print("Number of patients based on tissue source")
+table(metadata$Tissue_Source)
+
+print("Number of patients based on primary site")
+table(metadata$Primary_site)
+
+print("Cross tabulation")
+table(metadata$Response, metadata$Tissue_Source)
+
+```
+
+### Exploration 2: How to visualise my data ? {-} 
+Typically in a single-cell data, we perform dimension reduction to reduce and project the high dimensional cell by gene matrix on to 2D space. This allows us to visualise various things of interest, such as distribution of cell types and disease outcomes. In this dataset, cell were classified as the following cell types based on markers:   
+- CD8+ cytotoxic T cells (Tc).   
+- CD4+ T helper cells (Th).   
+- macrophage and monocytes (macro.mono; CD68+ or CD14+).   
+- B cells (B; CD20+), melanoma and melanocytes (melano; SOX10+ or S100+).   
+- endothelial cells (CD31+).    
+- cells that did not express any of these markers or with conflicting expression patterns were classified as “others”.      
+
+*Note:* for single-cell RNA-seq with around 20,000 genes, we often need to perform some filtering (e.g. select highly variable genes) to reduce the number of features. Here, given we have less than 50 proteins, there is no need to pre-fileter. That being said, we provide some sample code below (commented out) to demonstrate how to identify HVG followed by UMAP in scRNA-seq data.
+
+```{r eval=FALSE, include=TRUE}
+# gene_var <- modelGeneVar(data_sce)
+# hvgs <- getTopHVGs(gene_var, prop=0.1)
+# data_sce <- runUMAP(data_sce, scale=TRUE,  subset_row = hvgs)
+data_sce <- runUMAP(data_sce, scale=TRUE)
+```
+```{r eval=params$evalc,fig.height=4, fig.width=12}
+a <- plotUMAP(data_sce, colour_by = "Cluster.v2")
+b <- plotUMAP(data_sce, colour_by = "Response")
+c <- plotUMAP(data_sce, colour_by = "Sample_ID")
+a + b + c
+```
+
+<div class="aimbox"> 
+<span class="fa-stack fa-lg">
+<i class="fa fa-circle fa-stack-2x"></i>
+<i class="far fa-chart-bar fa-stack-1x fa-inverse"></i>
+</span> <strong>Interactive Q&A:</strong>     
+
+What can we learn from these illustrations? Is there anything interesting in the plot? Questions to consider include:    
+
+- Q1: Is there patient batch effect?    
+- Q2: Are the responder and non-responder patients easy or difficult to distinguish?     
+
+</div>
+   
+```{r eval=params$evalc,}
+print("Optional")
+
+metadata <- colData(data_sce)
+metadata <- cbind(metadata, reducedDim(data_sce, "UMAP"))
+metadata <- data.frame(metadata)
+
+plotlist <- list()
+thispatient  <-  unique(metadata$Sample_ID)[1]
+for ( thispatient in unique(metadata$Sample_ID)){
+        metadata$selected_patient <- ifelse( metadata$Sample_ID == thispatient, "seleted patient" , "other patients")
+        
+       p <- ggplot(metadata, aes(x =UMAP1 , y = UMAP2 , colour = selected_patient  )) + geom_scattermore(pointsize = 0.5) + ggtitle(thispatient) + scale_colour_manual(values = c("grey" , "red"))
+         
+       plotlist [[thispatient]] <- p
+}
+
+ggarrange(plotlist = plotlist , ncol = 5, nrow = 6 , common.legend = T )
+```
+
+### Exploration 3: Is there a spatial structure in my data? {-} 
+The advantage with spatial omics is that we can examine the organisation of the cell types as it occurs on the tissue slide. Here we visualise one of the slide from a patient. As an optional exercise, you can 
+
+- permute the cell type label 
+- permute the spatial coordinate, 
+
+to give a sense of what is random ordering. 
+
+```{r fig.height=4, fig.width=6, eval=params$evalc}
+one_sample <- data_sce[, data_sce$Sample_ID  == unique(data_sce$Sample_ID)[1]]
+one_sample  <- colData(one_sample)
+one_sample <- data.frame(one_sample)
+
+tableau_palette <- scale_colour_tableau() 
+color_codes <- tableau_palette$palette(10)
+
+a <- ggplot(one_sample, aes(x = Location_Center_X , y = Location_Center_Y, colour =Cluster.v2)) + geom_point(alpha=0.7) +  scale_colour_manual(values = c(color_codes, "lightgrey")) + ggtitle("Original slide")
+
+```
+
+```{r  fig.height=4, fig.width=12, eval=params$evalc}
+print("Optional: Permute the cell type labels")
+one_sample$Cluster.v2_permute <- sample(one_sample$Cluster.v2)
+b <- ggplot(one_sample, aes(x = Location_Center_X , y = Location_Center_Y, colour =Cluster.v2_permute)) + geom_point(alpha=0.7) +  scale_colour_manual(values = c(color_codes, "lightgrey")) + ggtitle("Permute the cell type label")
+
+print("Optional: Permute the spatial coordinate")
+one_sample$Location_Center_X_permute <- sample(one_sample$Location_Center_X)
+one_sample$Location_Center_Y_permute <- sample(one_sample$Location_Center_Y)
+c <- ggplot(one_sample, aes(x = Location_Center_X_permute , y = Location_Center_Y_permute, colour =Cluster.v2)) + geom_point(alpha=0.7) +  scale_colour_manual(values = c(color_codes, "lightgrey")) + ggtitle("Permute the X, Y coordinate")
+a + b + c
+```
+
+<div class="aimbox"> 
+<span class="fa-stack fa-lg">
+<i class="fa fa-circle fa-stack-2x"></i>
+<i class="far fa-chart-bar fa-stack-1x fa-inverse"></i>
+</span> <strong> Critical thinking: </strong>   
+
+- Is there a structure in the data real ? 
+- What are additional strategies to generate random distribution? 
+
+</div>
+
+
+#  Describing tissue microenvrionments and cellular neighbourhoods  
+
+## Do cell type co-localise in specfic regions? 
+
+We begin by examine how can we identify and visualise regions of tissue where spatial associations between cell-types is similar? There are many packages that perform this task andhere we use the lisaClust function [https://www.bioconductor.org/packages/devel/bioc/html/lisaClust.html] that is based on "local L-function" to spatially clusters cells into different regions with similar cell type composition. 
+
+```{r eval=params$evalc}
+set.seed(51773)
+BPPARAM <- simpleSeg:::generateBPParam(2)
+
+# Cluster cells into spatial regions with similar composition.
+data_sce  <- lisaClust(
+  data_sce ,
+  k = 5,
+  Rs = c(20, 50, 100),
+  sigma = 50,
+  spatialCoords = c("Location_Center_X", "Location_Center_Y"),
+  cellType = "Cluster.v2",
+  imageID = "Sample_ID" ,
+  regionName = "region",
+  BPPARAM = BPPARAM
+)
+ 
+```
+
+
+## Which regions appear to be different between responders and non-responders?  
+
+####  Visualise regions on individual level {-}
+
+```{r fig.height=3, fig.width=10 , eval=params$evalc}
+metadata <- colData(data_sce)
+metadata <- metadata[ metadata$Sample_ID == metadata$Sample_ID[1],  ]
+metadata <- data.frame(metadata)
+
+plotlist <- list()
+plotlist_celltype <- list()
+thisregion  <-  unique(metadata$region)[1]
+
+tableau_palette <- scale_colour_tableau() 
+color_codes <- tableau_palette$palette( 10 )
+color_codes <- c(color_codes, "darkgrey" , "grey90") 
+
+names(color_codes) <- c( unique(metadata$Cluster.v2) ,  "other regions")
+
+for ( thisregion in sort(unique(metadata$region))){
+        
+        selected_region_index <-  metadata$region == thisregion
+        
+        metadata$selected_region <-  "other regions"
+        metadata$selected_region[selected_region_index] <- "selected region"
+        
+        metadata$celltype <- metadata$Cluster.v2
+        metadata$celltype[!selected_region_index ] <-   "other regions"
+        
+        metadata$celltype <- factor(metadata$celltype, levels = c(unique(metadata$Cluster.v2), "other regions"))
+
+       p <- ggplot(metadata, aes(x = Location_Center_X , y = Location_Center_Y , colour = selected_region  )) + geom_scattermore(pointsize = 1.5) + ggtitle(thisregion) + scale_colour_manual(values = c("grey" , "red"))
+         
+       
+    
+       p2 <-  ggplot(metadata, aes(x = Location_Center_X , y = Location_Center_Y , colour =  celltype )) + geom_scattermore(pointsize = 1.5) + ggtitle(thisregion) + scale_colour_manual(values =  color_codes)
+       
+      plotlist [[thisregion ]] <- p
+       
+      plotlist_celltype [[thisregion ]] <- p2
+}
+
+ggarrange(plotlist = plotlist , ncol = 5, nrow = 1 , common.legend = T )
+ggarrange(plotlist = plotlist_celltype , ncol = 5, nrow = 1 , common.legend = T )
+
+```
+
+####  Visualise regions across patients {-}
+
+We can better interpret the region output by summarising the proportion of each cell type in a region across the patients. Looking at the composition of cell types in each region, comparing between responder and non-responders. 
+
+
+```{r  fig.height=4, fig.width=10, eval=params$evalc}
+
+df <- data.frame(colData( data_sce))
+ 
+
+df_plot <- NULL
+for ( thispatient in unique(df$Sample_ID)){
+  this_df <- df[df$Sample_ID == thispatient, ]
+  temp_df <-   table( this_df$region, this_df$Cluster.v2 )
+  temp_df <-  temp_df / rowSums(temp_df)
+   temp_df <- data.frame(  temp_df)
+  temp_df$patient <-  thispatient
+  temp_df$reponse <- unique( this_df$Response )
+  df_plot <- rbind(df_plot, temp_df)
+}
+
+df_plot <- df_plot %>% dplyr::group_by( Var1 , Var2, reponse) %>% 
+  summarise(mean_proportion = mean(Freq))
+  
+# r1 <- df_plot[ df_plot$Var1 == "region_1", ]  
+
+ggplot(df_plot, aes(y = Var2, x = Var1 ,colour =mean_proportion  , size = mean_proportion ))+  geom_point() + 
+  facet_grid(~reponse, scales = "free", space = "free" ) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  xlab("Region" ) + ylab("Celltype") + scale_colour_viridis_c()
+```
+
+
+<div class="aimbox"> 
+<span class="fa-stack fa-lg">
+<i class="fa fa-circle fa-stack-2x"></i>
+<i class="far fa-chart-bar fa-stack-1x fa-inverse"></i>
+</span> <strong>Interactive Q&A:</strong>   
+ 
+Q4: Which regions appear to be different between responders and non-responders?        
+
+</div>
+
+
+```{r  fig.height=4, fig.width=10, eval=params$evalc}
+
+df <- data.frame(colData( data_sce))
+
+df <- df %>% dplyr::group_by(Sample_ID ,Response, region) %>%
+  count(Cluster.v2) %>%
+  mutate(proportion = n / sum(n))
+
+
+ggplot(df, aes(y = proportion, x = Sample_ID , fill = Cluster.v2))+ geom_col()+facet_grid(~region+Response, scales = "free", space = "free" ) + scale_fill_manual(values = c(color_codes))  +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+
+```
+
+
+<div class="aimbox"> 
+<span class="fa-stack fa-lg">
+<i class="fa fa-circle fa-stack-2x"></i>
+<i class="far fa-chart-bar fa-stack-1x fa-inverse"></i>
+</span> <strong>Interactive Q&A:</strong>
+
+Q5: Does your conclusion change after looking at a different plot ?    
+
+</div>
+
+
+## Further exploration by visualise selected regions    
+We see that Region 1 appears to suggest the non - responder patients have more melano. Region 3 appears to be the tumor microenvironment with lots of Th.ae (antigen-experienced) and macro.mono (macrophage and monocytes) cell types. Let's focus on region 1 and region 3 and visualise the data with boxplot, as well as comparing to the overall cell type proportion without segmenting into regions.   
+
+```{r fig.height=4, fig.width= 12 , eval=params$evalc}
+df <- data.frame(colData( data_sce))
+
+df_plot <- NULL
+for ( thispatient in unique(df$Sample_ID)){
+  this_df <- df[df$Sample_ID == thispatient, ]
+  temp_df <-   table( this_df$region, this_df$Cluster.v2 )
+  temp_df <-  temp_df / rowSums(temp_df)
+  temp_df <- data.frame(  temp_df)
+  temp_df$patient <-  thispatient
+  temp_df$reponse <- unique( this_df$Response )
+  df_plot <- rbind(df_plot, temp_df)
+}
+
+df_plot_region_1 <- df_plot[df_plot$Var1 == "region_1", ]
+ 
+a <- ggplot(df_plot_region_1, aes(x =  Var2,  y = Freq, colour = reponse)) +
+  geom_boxplot()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Proportion") + xlab("Cell type")+ ggtitle("Region 1") + ylim(0,1)
+
+
+df_plot_region_3 <- df_plot[df_plot$Var1 == "region_3", ]
+
+b <- ggplot(df_plot_region_3, aes(x =  Var2,  y = Freq, colour = reponse)) +
+  geom_boxplot()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))  + 
+  ylab("Proportion") + xlab("Cell type") + ggtitle("Region 3")
+ 
+
+
+overall <- NULL
+for ( thispatient in unique(df$Sample_ID)){
+  
+  this_df <- df[df$Sample_ID == thispatient, ]
+  
+  temp_df <-   table(  this_df$Cluster.v2 )
+  temp_df <-  temp_df /sum(temp_df)
+   temp_df <- data.frame(  temp_df)
+  temp_df$patient <-  thispatient
+  temp_df$reponse <- unique( this_df$Response )
+  overall <- rbind(overall, temp_df)
+}
+
+
+c <- ggplot(overall, aes(x =  Var1,  y = Freq, colour = reponse)) +
+  geom_boxplot()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))  + 
+  ylab("Proportion") + xlab("Cell type") + ggtitle("Overall composition")
+ 
+
+a + b + c
+
+
+
+
+
+
+```
+
+#### Selecting a specific markers for further exploration {-}
+Often you may have a marker in mind to further examine the expression of key marker genes in these region specific cell types.  For example, we select cells that have high Ki67 expression.  (ie, only keeping the cells that have Ki67 expression higher than the median Ki67 expression in the whole dataset). We choose Ki67 as an example here because Ki67 is strongly associated with tumor cell proliferation and growth and is widely used as a biomarker in cancer analysis.    
+
+
+```{r fig.height=4, fig.width= 12, eval=params$evalc}
+
+median_ki67 <- median( logcounts(data_sce[ "Ki67" , ]))
+data_sce$ki67 <- ifelse( logcounts(data_sce[ "Ki67" , ]) > median_ki67, "high_ki67" , "low_ki67")
+
+
+df_plot <- NULL
+for ( thispatient in unique(df$Sample_ID)){
+  this_df <- df[df$Sample_ID == thispatient, ]
+  temp_df <-   table( this_df$region, this_df$Cluster.v2 )
+  temp_df <-  temp_df / rowSums(temp_df)
+  temp_df <- data.frame(  temp_df)
+  temp_df$patient <-  thispatient
+  temp_df$reponse <- unique( this_df$Response )
+  df_plot <- rbind(df_plot, temp_df)
+}
+
+df_plot_region_1 <- df_plot[df_plot$Var1 == "region_1", ]
+ 
+a <- ggplot(df_plot_region_1, aes(x =  Var2,  y = Freq, colour = reponse)) +
+  geom_boxplot()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Proportion") + xlab("Cell type")+ ggtitle("Region 1") + ylim(0,1)
+
+
+df_plot_region_3 <- df_plot[df_plot$Var1 == "region_3", ]
+
+b <- ggplot(df_plot_region_3, aes(x =  Var2,  y = Freq, colour = reponse)) +
+  geom_boxplot()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))  + 
+  ylab("Proportion") + xlab("Cell type") + ggtitle("Region 3")
+ 
+
+
+overall <- NULL
+for ( thispatient in unique(df$Sample_ID)){
+  
+  this_df <- df[df$Sample_ID == thispatient, ]
+  
+  temp_df <-   table(  this_df$Cluster.v2 )
+  temp_df <-  temp_df /sum(temp_df)
+   temp_df <- data.frame(  temp_df)
+  temp_df$patient <-  thispatient
+  temp_df$reponse <- unique( this_df$Response )
+  overall <- rbind(overall, temp_df)
+}
+
+
+c <- ggplot(overall, aes(x =  Var1,  y = Freq, colour = reponse)) +
+  geom_boxplot()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))  + 
+  ylab("Proportion") + xlab("Cell type") + ggtitle("Overall composition")
+ 
+
+a + b + c
+
+
+
+
+```
+
+<div class="aimbox"> 
+<span class="fa-stack fa-lg">
+<i class="fa fa-circle fa-stack-2x"></i>
+<span class="far fa-comment fa-stack-1x fa-inverse"></span>
+</span> <strong> Discussion:</strong>
+
+Comparing the overall composition and the cell type composition in the region, what did you observe about the regions? 
+</div>
+
+
+#  How do we generate molecular representation for each individual ?  
+
+In this demo, we use scFeatures to generate molecular representation for each patient from the matrix of proteins by cells. The molecular representation is interpretable and hence facilitates downstream analysis of the patient. Overall, scFeatures generates features across six categories representing different molecular views of cellular characteristics. These include:
+
+- i) cell type proportions
+- ii) cell type specific gene expressions
+- iii) cell type specific pathway expressions
+- iv) cell type specific cell-cell interaction (CCI) scores
+- v) overall aggregated gene expressions
+- vi) spatial metrics
+
+The different types of features constructed enable a more comprehensive multi-view understanding of each patient from a matrix of proteins x cells.
+
+Given in the previous section, we clustered the cells into regions, we can use the region information as additional layer of information on top of the cell types to examine region-specific cell-type specific features. 
+
+```{r eval=params$evalc}
+
+region <- data_sce$region
+region <- gsub("_" , "", region)
+data_sce$celltype <- paste0( data_sce$Cluster.v2 , "-" , region)
+
+print("number of cells in each sample")
+table(data_sce$Sample_ID) 
+
+print("number of cells in each celltype - Region specific cell type")
+table(data_sce$celltype) 
+```
+
+<div class="aimbox"> 
+<span class="fa-stack fa-lg">
+<i class="fa fa-circle fa-stack-2x"></i>
+<span class="far fa-comment fa-stack-1x fa-inverse"></span>
+</span> <strong> Discussion:</strong>
+
+Is there any sample or cell types you would like to remove from the data?
+
+</div>
+
+
+## How to create one molecular representations for an individual ?
+
+All the feature types can be generated in one line of code. This runs the function using default settings for all parameters, for more information, type `?scFeatures`.
+
+
+```{r eval=FALSE, include=TRUE, eval=FALSE}
+
+# scFeatures requires the following columns 
+# celltype, sample, x_cord and y_cord
+# alternatively, these can be also set as argument in the scFeatures function 
+ 
+data_sce$sample <- data_sce$Sample_ID
+data_sce$x_cord <- data_sce$Location_Center_X
+data_sce$y_cord <- data_sce$Location_Center_Y
+
+# here, we specify that this is a spatial proteomics data
+# scFeatures support parallel computation to speed up the process 
+scfeatures_result <- scFeatures(data_sce , type = "spatial_p" , ncores = 10 )
+
+```
+
+
+## How to visualise and explore scFeatures output ?
+We have generated a total of 13 feature types and stored them in a list. All generated feature types are stored in a matrix of samples by features.
+For example, the first list element contains the feature type “proportion_raw”, which contains the cell type proportion features for each individual sample. We could print out the first 5 columns and first 5 rows of the first element to see.
+
+```{r eval=params$evalc}
+scfeatures_result <- readRDS("scfeatures_result_region_specific.rds")
+
+# combine sample name with outcome 
+scfeatures_result_format <- scfeatures_result
+outcome <- data_sce[, match( rownames(scfeatures_result[[1]]), data_sce$Sample_ID)]$Response
+outcome <- unname(outcome) 
+
+for ( i in c(1:length(scfeatures_result_format))){
+  this <- scfeatures_result_format[[i]]
+  rownames(this) <- paste0(rownames(this), "_cond_", outcome )
+  scfeatures_result_format[[i]] <- this
+}
+
+# we have generated a total of 13 feature types
+names(scfeatures_result_format)
+
+# each row is a sample, each column is a feature 
+data.frame(scfeatures_result_format[[1]][1:5, 1:5])
+## DT::datatable(meta_table , options = list(scrollX = TRUE))
+```
+
+Once the features are generated, you may wish to visually explore the features. 
+
+Here we plot a volcano plot and a dotplot for the region specific cell type specific expression feature.   
+
+
+```{r fig.height=5, fig.width=7, eval=params$evalc}
+gene_mean_celltype <- scfeatures_result_format$gene_mean_celltype
+# this transposes the data
+# in bioinformatics conversion, features are stored in rows 
+# in statistics convention, features are stored in columns
+gene_mean_celltype <- t(gene_mean_celltype)
+      
+# pick CD31-region5 as an example cell type 
+gene_mean_celltype <- gene_mean_celltype[ grep("B-region4", rownames(gene_mean_celltype)), ]
+condition  <- unlist( lapply( strsplit( colnames(gene_mean_celltype), "_cond_"), `[`, 2))
+condition <- data.frame(condition = condition )
+design <- model.matrix(~condition, data = condition)
+fit <- lmFit(gene_mean_celltype, design)
+fit <- eBayes(fit)
+tT <- topTable(fit, n = Inf)
+tT$gene <- rownames(tT)
+p <- ggplot( tT , aes(logFC,-log10(P.Value) , text = gene ) )+
+      geom_point(aes(colour=-log10(P.Value)), alpha=1/3, size=1) +
+      scale_colour_gradient(low="blue",high="red")+
+      xlab("log2 fold change") + ylab("-log10 p-value") + theme_minimal()
+ 
+a <- ggplotly(p) 
+
+```
+
+
+
+```{r fig.height=5, fig.width=7, eval=params$evalc}
+b <- ggplot( tT , aes( y = reorder(gene, logFC) , x = logFC  ) )+
+      geom_point(aes(colour=-log10(P.Value)), alpha=1/3, size=1) +
+      scale_colour_gradient(low="blue",high="red")+
+      xlab("logFC") + ylab("region specific cel type specfic features" ) + theme_minimal()
+a+b
+
+```
+
+<div class="aimbox"> 
+<span class="fa-stack fa-lg">
+<i class="fa fa-circle fa-stack-2x"></i>
+<span class="far fa-comment fa-stack-1x fa-inverse"></span>
+</span> <strong>Interactive Q&A:</strong>
+
+Q6: Which figure do you prefer? The volcano plot or the dotplot? 
+
+</div>
+
+To accommodate for easier interpretation of the features, scFeatures contains a function run_association_study_report that enables the user to readily visualise and explore all generated features with one line of code.
+
+**Tips:-** Some categories of features such as cell cell interaction takes a long time to run.  You may use parallel computation to speed up the process or select a small number of features categories to reduce computational time. 
+```{r include=TRUE, eval=FALSE}
+# specify a folder to store the html report. Here we store it in the current working directory. 
+output_folder <-  getwd()
+run_association_study_report(scfeatures_result, output_folder )
+```
+
+## Are the generated features sensible ? 
+<div class="aimbox"> 
+<span class="fa-stack fa-lg">
+<i class="fa fa-circle fa-stack-2x"></i>
+<span class="far fa-comment fa-stack-1x fa-inverse"></span>
+</span> <strong>Interactive Q&A:</strong>
+
+Using the HTML, we can look at some of the critical thinking questions that a researcher would ask about the generated features. These questions are exploratory and there is no right or wrong answer.   
+
+Q7: Do the generated features look reasonable?         
+
+- Which cell type(s) would you like to focus on at your next stage of analysis?       
+- Which feature type(s) would you like to focus on at your next stage of analysis?       
+- Are the conditions in your data relatively easy or difficult to distinguish?       
+
+</div>
+
+
+# Can we classify or discrimiante between responders and non-responders ? 
+
+### Building classification model {-}
+
+In this section, we will perform disease outcome classification using the molecular representation of individuals. Recall in the previous section that we have stored the 13 feature types matrix in a list. Instead of manually retrieving each matrix from the list to build separate models, classifyR can directly take a list of matrices as an input and run repeated cross-validation model on each matrix individually. Below, we run 5 repeats of 3 folds cross-validation. 
+
+```{r eval=FALSE, include=TRUE}
+outcome <- data_sce[, match( rownames(scfeatures_result[[1]]), data_sce$Sample_ID)]$Response
+outcome <- unname(outcome) 
+
+
+### generate classfyr result 
+
+classifyr_result <- crossValidate(scfeatures_result,
+                                 outcome, 
+                                 classifier = "kNN",
+                                 nFolds = 3, 
+                                 nRepeats = 5, 
+                                 nCores = 20  )
+
+
+```
+
+### Visualising the classification performance {-}
+To examine the classification model performance, we first need to specify a metric to calculate. Here, we calculate the **balanced accuracy ** and visualise the accuracy using boxplots.
+
+```{r eval=params$evalc}
+classifyr_result <-  readRDS("classifyr_result_region_specific.rds")
+classifyr_result <- lapply(classifyr_result, 
+                           function(x) calcCVperformance(x, performanceType = "Balanced Accuracy"))
+
+level_order <- names(scfeatures_result)
+p  <- performancePlot(classifyr_result) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  scale_x_discrete(limits = level_order)  
+p
+```
+
+<div class="aimbox"> 
+<span class="fa-stack fa-lg">
+<i class="fa fa-circle fa-stack-2x"></i>
+<i class="far fa-chart-bar fa-stack-1x fa-inverse"></i>
+</span> <strong>Interactive Q&A:</strong>   
+
+Q8:Based on the classification performance and survival (see Appendix below), which feature type would you like to focus on at your next stage of analysis?     
+</div>
+
+
+# Appendix
+## PART A: Survival analysis
+
+The dataset has survival outcome. Apart from performing prediction on responder versus non-responder, here we highlight the use of scFeatures on survival analysis.  
+
+
+```{r fig.height=5, fig.width=14, eval=params$evalc}
+
+survival_day <-  unname( data_sce[, match( rownames(scfeatures_result[[1]]), data_sce$Sample_ID)]$Survival_from_Rx_Start)
+censoring <-  unname( data_sce[, match( rownames(scfeatures_result[[1]]), data_sce$Sample_ID)]$Known_Deceased)
+
+ i <- 13
+ 
+plotlist <- list()
+for (i in c(1 : length( scfeatures_result ))){
+  feature_name <- names(scfeatures_result)[i]
+  feature <-  scfeatures_result[[i]]
+  feature <- t(feature)
+  # run hierarchical clustering
+  hclust_res <- hclust(
+    as.dist(1 - cor(feature )),
+    method = "ward.D2"
+  )
+  
+  cluster_res <- cutree(hclust_res, k = 2)
+  
+  metadata <- data.frame( cluster = factor(cluster_res),
+                          survival_day = survival_day,
+                          censoring = censoring)
+  
+  # plot survival curve
+  fit <- survfit(
+    Surv(survival_day, censoring) ~ cluster,
+    data = metadata
+  )
+  ggsurv <- ggsurvplot(fit,
+                       conf.int = FALSE, risk.table = TRUE,
+                       risk.table.col = "strata", pval = TRUE,
+                       xlim = c(0,700), break.time.by = 100 
+                        
+  ) + ggtitle(  feature_name)
+  
+  plotlist[[feature_name]] <-   ggsurv 
+ 
+}
+
+ arrange_ggsurvplots(  plotlist, print = TRUE,
+  ncol = 3 , risk.table.height = 0.3)
+ 
+ 
+ 
+```
+
+## PART B: Explanation of spatial features 
+
+- L function:
+
+The L function is a spatial statistic used to assess the spatial distribution of cell types. It assess the significance of cell-cell interactions, by calculating the density of a cell type with other cell types within a certain radius. High values indicate spatial association, low values indicate spatial avoidance.  
+
+
+
+```{r fig.height=4, fig.width=10, eval=params$evalc}
+
+tableau_palette <- scale_colour_tableau() 
+color_codes <- tableau_palette$palette( 10 )
+color_codes <- c(color_codes, "darkgrey" , "grey90") 
+
+names(color_codes) <- c( unique(data_sce$Cluster.v2) ,  "other regions")
+ 
+one_sample  <- data_sce[ , data_sce$Sample_ID == "16BL"  ]
+one_sample <- data.frame( colData(one_sample) )
+
+one_sample$celltype <- one_sample$Cluster.v2
+index <-  one_sample$celltype  %in% c("macro.mono", "Tc.ae")
+one_sample$celltype[!index] <- "others"
+a <-ggplot( one_sample, aes(x = Location_Center_X , y = Location_Center_Y, colour = celltype )) + geom_point()  + scale_colour_manual(values = color_codes)  + ggtitle( "Patient 16BL - high L value with \n macro.mono interacting Tc.ae")
+ 
+
+one_sample$celltype <- one_sample$Cluster.v2
+index <-  one_sample$celltype  %in% c("melano", "Tc.ae")
+one_sample$celltype[!index] <- "others"
+b <- ggplot( one_sample, aes(x = Location_Center_X , y = Location_Center_Y, colour = celltype )) + geom_point()  + scale_colour_manual(values = color_codes)  + ggtitle( "Patient 16BL - low L value with  \n melano interacting Tc.ae")
+ 
+a + b
+
+ 
+```
+
+
+
+
+- Cell type interaction composition:
+
+We calculate the nearest neighbours of each cell and then calculate the pairs of cell type based on the nearest neighbour. This allow us to summarised it into a cell type interaction composition.
+
+
+```{r fig.height=6, fig.width=10, eval=params$evalc}
+
+tableau_palette <- scale_colour_tableau() 
+color_codes <- tableau_palette$palette( 10 )
+color_codes <- c(color_codes, "darkgrey" , "grey90") 
+
+names(color_codes) <- c( unique(data_sce$Cluster.v2) ,  "other regions")
+ 
+one_sample  <- data_sce[ , data_sce$Sample_ID == "16BL"  ]
+one_sample <- data.frame( colData(one_sample) )
+
+one_sample$celltype <- one_sample$Cluster.v2
+ 
+a <-ggplot( one_sample, aes(x = Location_Center_X , y = Location_Center_Y, colour = celltype )) + geom_point()  + scale_colour_manual(values = color_codes)  + ggtitle( "Patient 16BL")
+
+
+feature  <- scfeatures_result$celltype_interaction
+to_plot <- data.frame( t( feature["16BL", ])  )
+to_plot$feature <- rownames(to_plot) 
+colnames(to_plot)[2] <- "celltype interaction composition"
+ 
+to_plot <- to_plot[ to_plot$X16BL > 0.03 , ] 
+b <- ggplot(to_plot, aes( x =  reorder(`celltype interaction composition`, X16BL) ,  y = X16BL, fill=`celltype interaction composition`)) + geom_bar(stat="identity" ) + ylab("Major cell type interactions")  +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) 
+
+a+ b
+```
+
+
+
+- Moran's I:   
+
+Moran's I is a spatial autocorrelation statistic based on both location and values. It quantifies whether similar values tend to occur near each other or dispersed.     
+
+
+```{r fig.height=4, fig.width=10 , eval=params$evalc}
+
+high  <- data_sce["Ki67", data_sce$Sample_ID == "25RD"  ]
+high_meta <- data.frame( colData(high) ) 
+high_meta$expression <- as.vector(logcounts( high)) 
+
+low  <- data_sce["Ki67",  data_sce$Sample_ID == "42RD" ]
+low_meta <- data.frame( colData(low) )
+low_meta$expression <- as.vector(logcounts(low))
+
+
+a <- ggplot(high_meta, aes(x = Location_Center_X , y = Location_Center_Y, colour =expression)) + geom_point(alpha=0.5) + scale_colour_viridis_c() + ggtitle("Patient 25RD - high Moran's I in Ki67")
+
+b <- ggplot(low_meta, aes(x = Location_Center_X , y = Location_Center_Y, colour =expression)) + geom_point(alpha=0.5) + scale_colour_viridis_c() + ggtitle("Patient 42RD - low Moran's I in Ki67")
+
+a+b
+
+```
+
+
+
+- Nearest Neighbor Correlation:    
+
+This metric measures the correlation of proteins/genes between a cell and its nearest neighbor cell.   
+
+We see from both prediction and survival analysis that the feature type "nn correlation" (nearest neighbour correlation) perform the best.   
+
+
+Here we pick the protein "S100", a key player in cancer, as an example to illustrate the concept.  
+
+```{r fig.height=5, fig.width=10, eval=params$evalc}
+
+
+    
+ plot_nncorrelation <- function(thissample , thisprotein){
+   
+       sample_name <- thissample
+       thissample <- data_sce[, data_sce$Sample_ID ==     sample_name]
+    
+      
+      exprsMat <- logcounts(thissample)
+     
+    
+    cell_points_cts <- spatstat.geom::ppp(
+            x = as.numeric(thissample$Location_Center_X ), y = as.numeric(thissample$Location_Center_Y),
+            check = FALSE,
+            xrange = c(
+                min(as.numeric(thissample$Location_Center_X)),
+                max(as.numeric(thissample$Location_Center_X))
+            ),
+            yrange = c(
+                min(as.numeric(thissample$Location_Center_Y)),
+                max(as.numeric(thissample$Location_Center_Y))
+            ),
+            marks = t(as.matrix(exprsMat))
+        )
+    
+     value <-  spatstat.explore::nncorr(cell_points_cts)["correlation", ]
+      value <-  value[  thisprotein]
+     
+    # Find the indices of the two nearest neighbors for each cell
+    nn_indices <- nnwhich(cell_points_cts, k = 1)
+    
+    protein <-  thisprotein
+    df <- data.frame(thiscell_exprs  = exprsMat[protein, ] , exprs =  exprsMat[protein,nn_indices ])
+    
+   p <-  ggplot(df, aes( x =thiscell_exprs ,  y = exprs , colour =  exprs  )) +
+      geom_point(alpha = 0.3) + ggtitle(paste0( "Patient ", sample_name ,  " nn_corr = " ,  round(value, 2)  )) + scale_colour_viridis_c() 
+   
+   return (p ) 
+
+}
+
+    
+p1 <- plot_nncorrelation( "42RD" ,  "S100" )
+p2 <- plot_nncorrelation( "29RD" ,  "S100" )
+p1  + p2   
+ 
+```
+
+The correlation differ between the 42RD patient (from cluster 1) and the 29RD patient (from cluster 2).    
+
+
+
+
+
+
+
+
+
+
+
+
+
