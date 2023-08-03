@@ -615,7 +615,7 @@ Once the features are generated, you may wish to visually explore the features.
 Here, we plot a volcano plot and a dotplot for the region specific cell type specific expression feature.   
 
 
-```{r fig.height=5, fig.width=7, eval=params$evalc}
+```{r fig.height=4, fig.width=6, eval=params$evalc}
 gene_mean_celltype <- scfeatures_result_format$gene_mean_celltype
 # this transposes the data
 # in bioinformatics conversion, features are stored in rows 
@@ -638,16 +638,18 @@ p <- ggplot( tT , aes(logFC,-log10(P.Value) , text = gene ) )+
  
 a <- ggplotly(p) 
 
+a
 ```
 
 
 
-```{r fig.height=5, fig.width=7, eval=params$evalc}
+```{r fig.height=4, fig.width=6, eval=params$evalc}
 b <- ggplot( tT , aes( y = reorder(gene, logFC) , x = logFC  ) )+
       geom_point(aes(colour=-log10(P.Value)), alpha=1/3, size=1) +
       scale_colour_gradient(low="blue",high="red")+
       xlab("logFC") + ylab("region specific cel type specfic features" ) + theme_minimal()
-a+b
+
+b
 
 ```
 
