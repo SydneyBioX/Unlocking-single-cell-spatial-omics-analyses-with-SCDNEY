@@ -3,9 +3,8 @@ title: "Unlocking single cell spatial omics analyses with SCDNEY - Demo"
 author:
 - name: Yue Cao^1,2,3^, Helen Fu^1,2,3^, Jean Yang^1,2,3^
   affiliation:
-    
-  - 1. Sydney Precision Data Science Centre, University of Sydney, Australia;
-  - 2. School of Mathematics and Statistics, University of Sydney, Australia;
+  - 1. Sydney Precision Data Science Centre, University of Sydney, Australia; \\
+  - 2. School of Mathematics and Statistics, University of Sydney, Australia; \\
   - 3. Charles Perkins Centre, University of Sydney, Australia   
 date: 1 August, 2023
 
@@ -50,31 +49,31 @@ library(tidyr)
 library(survival)
 library(survminer)
 library(spatstat)
+library(lisaClust)
 ##library(spatstat.core) ## install.packages("spatstat")
 ##library(spatstat.geom) 
 library(scater)
 library(scran)
-library(lisaClust)
 
 theme_set(theme_classic())
 ```
 
 # Overview
 
-As single cell technology advances, the recent development of spatial omics allows us to examine the spatial organisation of cells within tissue in their native environment. This workshop will discuss the challenges and analytical focus associated with disease outcome prediction using multi-sample spatial dataset. We will also talk about general analytic strategies and the critical thinking questions that arise in the workflow.  
+As single cell technology advances, the recent development of spatial omics allows us to examine the spatial organisation of cells within tissues in their native environment. This workshop will discuss the challenges and analytical focus associated with disease outcome prediction using multi-sample spatial datasets. We will also talk about general analytical strategies and the critical thinking questions that arise in the workflow.  
 
 <br>
 <div class="aimbox"> 
 ### <span class="fa-stack fa"><i class="fa fa-circle fa-stack-2x"></i><i class="fa fa-pencil-alt fa-stack-1x fa-inverse"></i></span> Preparation and assumed knowledge {-}
 - Knowledge of R syntax
 - Familiarity with the [SingleCellExperiment class](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) 
-- Ability to install all required R packages, please check sessionInfo at the end of this documents to ensure you are using the correct version. 
+- Ability to install all required R packages, please check `sessionInfo` at the end of this document to ensure you are using the correct version. 
 
 ### <span class="fa-stack fa"><i class="fa fa-circle fa-stack-2x"></i><i class="fa fa-location-arrow fa-stack-1x fa-inverse"></i></span> Learning objectives {-}
-- Understand and visualise spatial omics dataset     
+- Understand and visualise spatial omics datasets     
 - Explore various strategies for disease outcome prediction using spatial omics data      
-- Understand and generate individual feature representations from cell levelexpression matrix 
-- Develop appreciation on how to assess performance of classification models   
+- Understand and generate individual feature representations from a cell-level expression matrix 
+- Develop appreciation on how to assess the performance of classification models   
 - Perform disease outcome prediction using the feature representation and robust classification framework     
 </div>
 
@@ -86,7 +85,7 @@ As single cell technology advances, the recent development of spatial omics allo
  | Activity                     | Time    |
  |------------------------------|---------|
  | Introduction to spatial technologies    | 20m  |
- | Cell segmentation with Deep learning (with BIDCell)   | 20m  |
+ | Cell segmentation with deep learning (with BIDCell)   | 20m  |
  | Exploring spatial data    |  20m    |
  | Break (Q&A) | 10m  |
  | Extracting features from spatial data (with scFeatures)    |  30m    |
@@ -94,17 +93,18 @@ As single cell technology advances, the recent development of spatial omics allo
 
 # Initial exploration and visualisation
 
-#### Data and Background {-} 
+#### Data and background {-} 
 Imaging mass cytometry (IMC) is a new imaging technique that gathers spatial information to create images that show the distribution of different cell types and their associated protein expression patterns in tissue. 
-In this demo, we examine IMC dataset taken from 
+In this demo, we examine IMC dataset taken from: 
 
 Moldoveanu D *et. al.* Spatially mapping the immune landscape of melanoma using imaging mass cytometry. Science Immunology, Apr;7(70):eabi5072. doi: 10.1126/sciimmunol.abi5072. PMID: 35363543.
 
-Here, the authors quantified the expression of 35 protein markers in two melanoma cohorts. Basic characeteristic of the data objects:   
+Here, the authors quantified the expression of 35 protein markers in two melanoma cohorts. Basic characteristics of the data objects:   
+
 - The dataset contains 35 proteins and 112,497 cells.   
-- The outcome is 16 non-responders (Response = No) and 14 responders (Response = Yes).    
+- The outcome is 16 non-responders (`Response` = No) and 14 responders (`Response` = Yes).    
 - 17 patients received CTLA4 treatment, 8 patients received PD1, 5 patients received both.   
-- From a range of tissue source and primary site.    
+- From a range of tissue sources and primary sites.    
 
 ```{r eval=params$evalc}
 data_sce <- readRDS("data_sce.rds")
@@ -121,14 +121,14 @@ logcounts(data_sce)[1:7, 1:7]
 ```
 
 #### Aim {-} 
-In this demo, we will examine one of the cohort - pretreatment melanoma samples from 30 individual with advanced disease who subsequently received ICI therapy. We will aim to identify features that has the potnetial to discriminate between non-responders (Response = No) and responders (Response = Yes).   
+In this demo, we will examine one of the cohorts - pretreatment melanoma samples from 30 individuals with advanced disease who subsequently received ICI therapy. We will aim to identify features that has the potnetial to discriminate between non-responders (`Response` = No) and responders (`Response` = Yes).   
 
-### Exploration 1: How complex is my data ? {-} 
-At the start of the exploration, its often good to get a sense of the complexity of the data.  We usually do this by exploring the distribution of the outcomes and various variables in the patients meta-data.  Here, we use cross-tabulation to examine the following variables:
+### Exploration 1: How complex is my data? {-} 
+At the start of the exploration, it is often good to get a sense of the complexity of the data.  We usually do this by exploring the distribution of the outcomes and various variables in the patient's meta-data.  Here, we use cross-tabulation to examine the following variables:
 
 - responder vs non-responders
 - tissue source
-- primary sites
+- primary site
 
 ```{r eval=params$evalc, fig.height=5, fig.width=5}
 print("number of responder and non responder in each type of treatment  ")
@@ -147,8 +147,9 @@ table(metadata$Response, metadata$Tissue_Source)
 
 ```
 
-### Exploration 2: How to visualise my data ? {-} 
-Typically in a single-cell data, we perform dimension reduction to reduce and project the high dimensional cell by gene matrix on to 2D space. This allows us to visualise various things of interest, such as distribution of cell types and disease outcomes. In this dataset, cell were classified as the following cell types based on markers:   
+### Exploration 2: How to visualise my data? {-} 
+Typically in single-cell data analysis, we perform dimension reduction to project the high dimensional cell by gene matrix on to 2D space. This allows us to visualise various things of interest, such as distribution of cell types and disease outcomes. In this dataset, cells were classified in the following cell types based on their markers:   
+
 - CD8+ cytotoxic T cells (Tc).   
 - CD4+ T helper cells (Th).   
 - macrophage and monocytes (macro.mono; CD68+ or CD14+).   
@@ -156,7 +157,7 @@ Typically in a single-cell data, we perform dimension reduction to reduce and pr
 - endothelial cells (CD31+).    
 - cells that did not express any of these markers or with conflicting expression patterns were classified as “others”.      
 
-*Note:* for single-cell RNA-seq with around 20,000 genes, we often need to perform some filtering (e.g. select highly variable genes) to reduce the number of features. Here, given we have less than 50 proteins, there is no need to pre-fileter. That being said, we provide some sample code below (commented out) to demonstrate how to identify HVG followed by UMAP in scRNA-seq data.
+*Note:* for single-cell RNA-seq with around 20,000 genes, we often need to perform some filtering (e.g. select highly variable genes) to reduce the number of features. Here, given we have less than 50 proteins, there is no need to pre-filter. That being said, we provide some sample code below (commented out) to demonstrate how to identify highly variable genes followed by UMAP visualisation in scRNA-seq data.
 
 ```{r eval=FALSE, include=TRUE}
 # gene_var <- modelGeneVar(data_sce)
@@ -205,10 +206,10 @@ ggarrange(plotlist = plotlist , ncol = 5, nrow = 6 , common.legend = T )
 ```
 
 ### Exploration 3: Is there a spatial structure in my data? {-} 
-The advantage with spatial omics is that we can examine the organisation of the cell types as it occurs on the tissue slide. Here we visualise one of the slide from a patient. As an optional exercise, you can 
+The advantage with spatial omics is that we can examine the organisation of the cell types as it occurs on the tissue slide. Here, we visualise one of the slides from a patient. As an optional exercise, you can 
 
 - permute the cell type label 
-- permute the spatial coordinate, 
+- permute the spatial coordinates 
 
 to give a sense of what is random ordering. 
 
@@ -242,8 +243,8 @@ a + b + c
 <i class="far fa-chart-bar fa-stack-1x fa-inverse"></i>
 </span> <strong> Critical thinking: </strong>   
 
-- Is there a structure in the data real ? 
-- What are additional strategies to generate random distribution? 
+- Is there structure in the data real ? 
+- What are additional strategies to generate a random distribution? 
 
 </div>
 
@@ -252,7 +253,7 @@ a + b + c
 
 ## Do cell type co-localise in specfic regions? 
 
-We begin by examine how can we identify and visualise regions of tissue where spatial associations between cell-types is similar? There are many packages that perform this task andhere we use the lisaClust function [https://www.bioconductor.org/packages/devel/bioc/html/lisaClust.html] that is based on "local L-function" to spatially clusters cells into different regions with similar cell type composition. 
+We begin by examining how can we identify and visualise regions of tissue where spatial associations between cell-types are similar. There are many packages that perform this task andhere we use the [lisaClust function](https://www.bioconductor.org/packages/devel/bioc/html/lisaClust.html) that is based on "local L-function" to spatially cluster cells into different regions with similar cell type composition. 
 
 ```{r eval=params$evalc}
 set.seed(51773)
@@ -389,13 +390,13 @@ ggplot(df, aes(y = proportion, x = Sample_ID , fill = Cluster.v2))+ geom_col()+f
 <i class="far fa-chart-bar fa-stack-1x fa-inverse"></i>
 </span> <strong>Interactive Q&A:</strong>
 
-Q5: Does your conclusion change after looking at a different plot ?    
+Q5: Does your conclusion change after looking at a different plot?    
 
 </div>
 
 
-## Further exploration by visualise selected regions    
-We see that Region 1 appears to suggest the non - responder patients have more melano. Region 3 appears to be the tumor microenvironment with lots of Th.ae (antigen-experienced) and macro.mono (macrophage and monocytes) cell types. Let's focus on region 1 and region 3 and visualise the data with boxplot, as well as comparing to the overall cell type proportion without segmenting into regions.   
+## Further exploration by visualising selected regions    
+We see that region 1 appears to suggest the non-responder patients have more melano. Region 3 appears to be the tumor microenvironment with lots of Th.ae (antigen-experienced) and macro.mono (macrophage and monocytes) cell types. Let's focus on region 1 and region 3 and visualise the data with boxplots, as well as comparing to the overall cell type proportion without segmenting into regions.   
 
 ```{r fig.height=4, fig.width= 12 , eval=params$evalc}
 df <- data.frame(colData( data_sce))
@@ -449,15 +450,9 @@ c <- ggplot(overall, aes(x =  Var1,  y = Freq, colour = reponse)) +
  
 
 a + b + c
-
-
-
-
-
-
 ```
 
-#### Selecting a specific markers for further exploration {-}
+#### Selecting a specific marker for further exploration {-}
 Often you may have a marker in mind to further examine the expression of key marker genes in these region specific cell types.  For example, we select cells that have high Ki67 expression.  (ie, only keeping the cells that have Ki67 expression higher than the median Ki67 expression in the whole dataset). We choose Ki67 as an example here because Ki67 is strongly associated with tumor cell proliferation and growth and is widely used as a biomarker in cancer analysis.    
 
 
@@ -516,10 +511,6 @@ c <- ggplot(overall, aes(x =  Var1,  y = Freq, colour = reponse)) +
  
 
 a + b + c
-
-
-
-
 ```
 
 <div class="aimbox"> 
@@ -532,20 +523,20 @@ Comparing the overall composition and the cell type composition in the region, w
 </div>
 
 
-#  How do we generate molecular representation for each individual ?  
+#  How do we generate a molecular representation for each individual?  
 
 In this demo, we use scFeatures to generate molecular representation for each patient from the matrix of proteins by cells. The molecular representation is interpretable and hence facilitates downstream analysis of the patient. Overall, scFeatures generates features across six categories representing different molecular views of cellular characteristics. These include:
 
-- i) cell type proportions
-- ii) cell type specific gene expressions
-- iii) cell type specific pathway expressions
-- iv) cell type specific cell-cell interaction (CCI) scores
-- v) overall aggregated gene expressions
-- vi) spatial metrics
+i) cell type proportions
+ii) cell type specific gene expressions
+iii) cell type specific pathway expressions
+iv) cell type specific cell-cell interaction (CCI) scores
+v) overall aggregated gene expressions
+vi) spatial metrics
 
 The different types of features constructed enable a more comprehensive multi-view understanding of each patient from a matrix of proteins x cells.
 
-Given in the previous section, we clustered the cells into regions, we can use the region information as additional layer of information on top of the cell types to examine region-specific cell-type specific features. 
+Given in the previous section, we clustered the cells into regions, we can use the region information as an additional layer of information on top of the cell types to examine region-specific cell-type specific features. 
 
 ```{r eval=params$evalc}
 
@@ -566,14 +557,14 @@ table(data_sce$celltype)
 <span class="far fa-comment fa-stack-1x fa-inverse"></span>
 </span> <strong> Discussion:</strong>
 
-Is there any sample or cell types you would like to remove from the data?
+Are there any samples or cell types you would like to remove from the data?
 
 </div>
 
 
-## How to create one molecular representations for an individual ?
+## How to create molecular representations of patients {-}
 
-All the feature types can be generated in one line of code. This runs the function using default settings for all parameters, for more information, type `?scFeatures`.
+All the feature types can be generated in one line of code. This runs the function using default settings for all parameters. For more information, type `?scFeatures`.
 
 
 ```{r eval=FALSE, include=TRUE, eval=FALSE}
@@ -593,9 +584,9 @@ scfeatures_result <- scFeatures(data_sce , type = "spatial_p" , ncores = 10 )
 ```
 
 
-## How to visualise and explore scFeatures output ?
+## How to visualise and explore scFeatures output?
 We have generated a total of 13 feature types and stored them in a list. All generated feature types are stored in a matrix of samples by features.
-For example, the first list element contains the feature type “proportion_raw”, which contains the cell type proportion features for each individual sample. We could print out the first 5 columns and first 5 rows of the first element to see.
+For example, the first list element contains the feature type `proportion_raw`, which contains the cell type proportion features for each patient sample. We could print out the first 5 columns and first 5 rows of the first element to see.
 
 ```{r eval=params$evalc}
 scfeatures_result <- readRDS("scfeatures_result_region_specific.rds")
@@ -621,7 +612,7 @@ data.frame(scfeatures_result_format[[1]][1:5, 1:5])
 
 Once the features are generated, you may wish to visually explore the features. 
 
-Here we plot a volcano plot and a dotplot for the region specific cell type specific expression feature.   
+Here, we plot a volcano plot and a dotplot for the region specific cell type specific expression feature.   
 
 
 ```{r fig.height=5, fig.width=7, eval=params$evalc}
@@ -670,16 +661,16 @@ Q6: Which figure do you prefer? The volcano plot or the dotplot?
 
 </div>
 
-To accommodate for easier interpretation of the features, scFeatures contains a function run_association_study_report that enables the user to readily visualise and explore all generated features with one line of code.
+To accommodate for easier interpretation of the features, scFeatures contains a function `run_association_study_report` that enables the user to readily visualise and explore all generated features with one line of code.
 
-**Tips:-** Some categories of features such as cell cell interaction takes a long time to run.  You may use parallel computation to speed up the process or select a small number of features categories to reduce computational time. 
+**Tips:** Some categories of features such as cell cell interaction takes a long time to run.  You may use parallel computation to speed up the process or select a small number of feature categories to reduce computational time. 
 ```{r include=TRUE, eval=FALSE}
 # specify a folder to store the html report. Here we store it in the current working directory. 
 output_folder <-  getwd()
 run_association_study_report(scfeatures_result, output_folder )
 ```
 
-## Are the generated features sensible ? 
+## Are the generated features sensible? 
 <div class="aimbox"> 
 <span class="fa-stack fa-lg">
 <i class="fa fa-circle fa-stack-2x"></i>
@@ -697,11 +688,11 @@ Q7: Do the generated features look reasonable?
 </div>
 
 
-# Can we classify or discrimiante between responders and non-responders ? 
+# Can we classify or discrimiante between responders and non-responders? 
 
-### Building classification model {-}
+### Building a classification model {-}
 
-In this section, we will perform disease outcome classification using the molecular representation of individuals. Recall in the previous section that we have stored the 13 feature types matrix in a list. Instead of manually retrieving each matrix from the list to build separate models, classifyR can directly take a list of matrices as an input and run repeated cross-validation model on each matrix individually. Below, we run 5 repeats of 3 folds cross-validation. 
+In this section, we will perform disease outcome classification using the molecular representation of patients. Recall in the previous section that we have stored the 13 feature types matrix in a list. Instead of manually retrieving each matrix from the list to build separate models, classifyR can directly take a list of matrices as an input and run a repeated cross-validation model on each matrix individually. Below, we run 5 repeats of 3-fold cross-validation. 
 
 ```{r eval=FALSE, include=TRUE}
 outcome <- data_sce[, match( rownames(scfeatures_result[[1]]), data_sce$Sample_ID)]$Response
@@ -741,14 +732,14 @@ p
 <i class="far fa-chart-bar fa-stack-1x fa-inverse"></i>
 </span> <strong>Interactive Q&A:</strong>   
 
-Q8:Based on the classification performance and survival (see Appendix below), which feature type would you like to focus on at your next stage of analysis?     
+Q8: Based on the classification performance and survival (see Appendix below), which feature type would you like to focus on at your next stage of analysis?     
 </div>
 
 
 # Appendix
 ## PART A: Survival analysis
 
-The dataset has survival outcome. Apart from performing prediction on responder versus non-responder, here we highlight the use of scFeatures on survival analysis.  
+The dataset has a survival outcome. Apart from performing prediction on responder versus non-responder, here we highlight the use of scFeatures for survival analysis.  
 
 
 ```{r fig.height=5, fig.width=14, eval=params$evalc}
@@ -802,7 +793,7 @@ for (i in c(1 : length( scfeatures_result ))){
 
 - L function:
 
-The L function is a spatial statistic used to assess the spatial distribution of cell types. It assess the significance of cell-cell interactions, by calculating the density of a cell type with other cell types within a certain radius. High values indicate spatial association, low values indicate spatial avoidance.  
+The L function is a spatial statistic used to assess the spatial distribution of cell types. It assesses the significance of cell-cell interactions, by calculating the density of a cell type with other cell types within a certain radius. High values indicate spatial association, low values indicate spatial avoidance.  
 
 
 
@@ -838,7 +829,7 @@ a + b
 
 - Cell type interaction composition:
 
-We calculate the nearest neighbours of each cell and then calculate the pairs of cell type based on the nearest neighbour. This allow us to summarised it into a cell type interaction composition.
+We calculate the nearest neighbours of each cell and then calculate the pairs of cell types based on the nearest neighbour. This allows us to summarise it into a cell type interaction composition.
 
 
 ```{r fig.height=6, fig.width=10, eval=params$evalc}
@@ -873,7 +864,7 @@ a+ b
 
 - Moran's I:   
 
-Moran's I is a spatial autocorrelation statistic based on both location and values. It quantifies whether similar values tend to occur near each other or dispersed.     
+Moran's I is a spatial autocorrelation statistic based on both location and values. It quantifies whether similar values tend to occur near each other or are dispersed.     
 
 
 ```{r fig.height=4, fig.width=10 , eval=params$evalc}
@@ -899,9 +890,9 @@ a+b
 
 - Nearest Neighbor Correlation:    
 
-This metric measures the correlation of proteins/genes between a cell and its nearest neighbor cell.   
+This metric measures the correlation of proteins/genes between a cell and its nearest neighbour cell.   
 
-We see from both prediction and survival analysis that the feature type "nn correlation" (nearest neighbour correlation) perform the best.   
+We see from both prediction and survival analysis that the feature type "nn correlation" (nearest neighbour correlation) performs the best.   
 
 
 Here we pick the protein "S100", a key player in cancer, as an example to illustrate the concept.  
@@ -956,15 +947,17 @@ p1  + p2
  
 ```
 
-The correlation differ between the 42RD patient (from cluster 1) and the 29RD patient (from cluster 2).    
+The correlation differs between the 42RD patient (from cluster 1) and the 29RD patient (from cluster 2).    
 
 
+## PART C: SessionInfo
 
+```{r  eval=params$evalc}
+sessionInfo()
+```
 
-
-
-
-
+## Acknowledgment 
+The authors thank all their colleagues, particularly at The University of Sydney, Sydney Precision Data Science and Charles Perkins Centre for their support and intellectual engagement. Special thanks to Ellis Patrick, Shila Ghazanfar, Andy Tran for guiding and supporting the building of this workshop. 
 
 
 
